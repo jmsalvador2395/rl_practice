@@ -7,10 +7,11 @@ import matplotlib.pyplot as plt
 from collections import namedtuple, deque
 from itertools import count
 from PIL import Image
-from utilities import data_point
+from utilities import data_point, visualize_block
 import math
 import datetime
 import sys
+import cv2
 
 
 import torch
@@ -20,7 +21,7 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 
 torch.set_printoptions(precision=10)
-model_path='../models/'
+model_path='./models/'
 
 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_dtype(torch.float32)
@@ -29,7 +30,7 @@ class dqn(nn.Module):
 	def __init__(self, actions):
 		super(dqn, self).__init__()
 		layer1 = nn.Sequential(
-			nn.Conv2d(4, 16, kernel_size=8, stride=4, padding=(2, 2)),
+			nn.Conv2d(3, 16, kernel_size=8, stride=4, padding=(2, 2)),
 			nn.BatchNorm2d(16),
 			nn.ReLU(),
 			nn.MaxPool2d(2)
@@ -54,7 +55,7 @@ class dqn(nn.Module):
 			nn.ReLU()
 		)
 
-		fc3 = nn.Linear(256, 4)
+		fc3 = nn.Linear(256, actions)
 
 		self.model = nn.Sequential(
 			layer1,
@@ -84,21 +85,20 @@ class dqn(nn.Module):
 		next_states =	torch.stack([i[3] for i in minibatch]).to(device)
 		not_done =		torch.stack([i[4] for i in minibatch]).to(device)
 
+		#visualize_block(states[0])
+
 		#create predictions
 		policy_scores=self(states)
 		#print('scores:\n{}'.format(policy_scores))
-		policy_scores=policy_scores[range(batch_size), actions]
+		#policy_scores=policy_scores[range(batch_size), actions]
 
 		#create max(Q vals) from target policy net
 		trgt_policy_scores=trgt_model(next_states)
 		trgt_qvals=trgt_policy_scores.max(1)[0]
 
-		"""
 		#create labels
 		y=policy_scores.clone().detach()
 		y[range(batch_size), actions] = rewards + gamma*trgt_qvals*not_done
-		"""
-		y=rewards + gamma*trgt_qvals*not_done
 		"""
 		print('actions:\n{}'.format(actions))
 		print('labels:\n{}'.format(y))
@@ -122,7 +122,7 @@ local functions
 def epsilon_update(epsilon, eps_start, eps_end, eps_decay, step):
 	return eps_end + (eps_start - eps_end) * math.exp(-1 * step / eps_decay)
 
-def main(arg0, pre_trained_model=None, eps_start=.9, episodes=20000, batch_size=32):
+def main(arg0, pre_trained_model=None, eps_start=.1, episodes=20000, batch_size=32):
 
 	eps_start=float(eps_start)
 	episodes=int(episodes)
@@ -140,17 +140,19 @@ def main(arg0, pre_trained_model=None, eps_start=.9, episodes=20000, batch_size=
 	dtype=torch.float32		#dtype for torch tensors
 	total_steps=0			#tracks global time steps
 
-	memory_size=5000		#size of replay memory buffer
+	memory_size=1000		#size of replay memory buffer
 	episode_scores=[]
 
 	
 	#create gym environment
 	#env = gym.make('BreakoutDeterministic-v4', obs_type='grayscale', render_mode='human')
-	env = gym.make('LunarLander-v2')
+	#env = gym.make('LunarLander-v2')
+	env = gym.make('CartPole-v1')
 
 	#get action space
 	#action_map=env.get_keys_to_action()
 	A=env.action_space.n
+	print(A)
 
 	#initialize main network
 	policy_net=dqn(A).to(device)
@@ -177,18 +179,13 @@ def main(arg0, pre_trained_model=None, eps_start=.9, episodes=20000, batch_size=
 	#initialize some variables before getting into the main loop
 	replay_memories=[]
 	steps_done=0
-	gray=np.array([0.299, 0.587, 0.114])
 
 	for ep in range(episodes):
 		total_reward=0
 
-		s_builder=data_point((4, 400, 600))				#initialize phi transformation function
 		#s_builder.add_frame(env.reset())	
 		env.reset()
-		frame=env.render(mode='rgb_array')
-		frame=np.dot(frame[...,:3], gray)
-		s_builder.add_frame(frame)
-		s=s_builder.get()
+		s=env.render(mode='rgb_array').reshape((3, 400, 600))
 		env.render()
 
 		t=1									#episodic t
@@ -210,12 +207,8 @@ def main(arg0, pre_trained_model=None, eps_start=.9, episodes=20000, batch_size=
 			epsilon = epsilon_update(epsilon, eps_start, eps_end, eps_decay, total_steps)
 
 			#take action and collect reward and s'
-			frame, r, done, info = env.step(a) 
-			#s_builder.add_frame(s_prime_frame)
-			frame=env.render(mode='rgb_array')
-			frame=np.dot(frame[... , :3], gray)
-			s_builder.add_frame(frame)
-			s_prime=s_builder.get()
+			_, r, done, info = env.step(a) 
+			s_prime=env.render(mode='rgb_array').reshape((3, 400, 600))
 			env.render()
 
 			#append to replay_memories as (s, a, r, s', done)
@@ -223,7 +216,7 @@ def main(arg0, pre_trained_model=None, eps_start=.9, episodes=20000, batch_size=
 									a,
 									torch.tensor(r, dtype=dtype),
 									torch.tensor(s_prime, dtype=dtype),
-									torch.tensor(~done)))
+									torch.tensor(not done)))
 
 			#remove oldest sample to maintain memory size
 			if len(replay_memories) > memory_size:
